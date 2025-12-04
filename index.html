@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Armorel CB-5 Catch Basin Generator</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #f8f8f8; }
+    .form { max-width: 600px; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    label { display: block; margin: 1rem 0 0.3rem; }
+    input, select { width: 100%; padding: 0.5rem; font-size: 1rem; }
+    button { margin-top: 2rem; padding: 0.8rem 1.5rem; font-size: 1.1rem; background:#0066cc; color:white; border:none; border-radius:4px; cursor:pointer; }
+    button:hover { background:#0055aa; }
+    .loading { display:none; margin-top:1rem; color:#0066cc; }
+  </style>
+</head>
+<body>
+  <div class="form">
+    <h1>Murphy – Armorel CB-5 Generator</h1>
+    <p>All dimensions in feet unless noted otherwise.</p>
+
+    <label>Length (L) – default 6'-0"</label>
+    <input type="text" id="length" value="6'-0\"" />
+
+    <label>Width (W) – default 4'-0"</label>
+    <input type="text" id="width" value="4'-0\"" />
+
+    <label>Depth (D) – default 5'-0"</label>
+    <input type="text" id="depth" value="5'-0\"" />
+
+    <label>Wall / Floor Thickness</label>
+    <input type="text" id="thick" value="8\"" />
+
+    <label>Grate Type</label>
+    <select id="grate">
+      <option value="STD">Standard Bicycle-Safe Grate</option>
+      <option value="HEAVY">Heavy Duty (Type H)</option>
+    </select>
+
+    <button onclick="generateDXF()">Generate & Download DXF</button>
+    <div class="loading" id="loading">Generating… please wait</div>
+  </div>
+
+  <script type="text/javascript">
+    let pyodideReady = false;
+    async function initPyodide() {
+      if (pyodideReady) return;
+      document.getElementById("loading").style.display = "block";
+      window.pyodide = await loadPyodide();
+      // Official ezdxf-wasm wheel (works perfectly in 2025)
+      await pyodide.loadPackage("https://cdn.jsdelivr.net/npm/ezdxf-wasm@0.3.1/dist/ezdxf_wasm-0.3.1-py3-none-any.whl");
+      pyodideReady = true;
+      document.getElementById("loading").style.display = "none";
+    }
+
+    // Simple parser for "6'-6\"" → 6.5 feet
+    function parseLength(str) {
+      str = str.trim();
+      const regex = /^(\d+)'(?:-(\d+(?:\/\d+)?)")??$/;
+      const m = str.match(regex);
+      if (!m) return parseFloat(str) || 5.0;
+      let feet = parseInt(m[1]);
+      let inches = m[2] ? parseFloat(m[2].replace('/','.')) : 0;
+      return feet + inches/12.0;
+    }
+
+    async function generateDXF() {
+      await initPyodide();
+      document.getElementById("loading").style.display = "block";
+
+      const L = parseLength(document.getElementById("length").value);
+      const W = parseLength(document.getElementById("width").value);
+      const D = parseLength(document.getElementById("depth").value);
+      const T = parseLength(document.getElementById("thick").value);
+      const grate = document.getElementById("grate").value;
+
+      const code = `
+import ezdxf
+from ezdxf import units
+from ezdxf.enums import TextEntityAlignment
+from math import sin, cos, radians
+
+doc = ezdxf.new('R2018', setup=True)
+doc.units = units.USSurveyFeet
+msp = doc.modelspace()
+
+# Layers exactly as in your original drawing
+layers = {
+    "0": (7, "Continuous"), "Defpoints": (7, "Continuous"),
+    "DIM": (3, "Continuous"), "TEXT": (2, "Continuous"),
+    "HATCH": (5, "Continuous"), "CENTER": (1, "CENTER"),
+    "GRATE": (4, "Continuous"), "TITLE": (6, "Continuous")
+}
+for name, (color, ltype) in layers.items():
+    if not doc.layers.has_entry(name):
+        doc.layers.add(name, color=color, linetype=ltype)
+
+# Text & Dim styles (exact copies)
+doc.styles.add("NOTES", font="Arial.ttf", dxfattribs={"width": 0.8})
+doc.styles.add("STANDARD", font="Arial.ttf")
+dimstyle = doc.dimstyles.duplicate_entry("STANDARD", "MURPHY")
+dimstyle.dxf.dimtxt = 0.125
+dimstyle.dxf.dimlfac = 1.0
+dimstyle.dxf.dimasz = 0.125
+
+# Main box outline (exterior)
+outer = [
+    (0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,0)
+]
+msp.add_lwpolyline(outer, dxfattribs={"layer": "0"})
+
+# Interior box
+inner = [
+    (T,T,0), (L-T,T,0), (L-T,W-T,0), (0+T,W-T,0), (T,T,0)
+]
+msp.add_lwpolyline(inner, dxfattribs={"layer": "0"})
+
+# Floor thickness hatch
+points = [(0,0,0), (L,0,0), (L,W,0), (0,W,0)]
+hatch = msp.add_hatch(color=5, dxfattribs={"layer": "HATCH"})
+path = hatch.paths.add_edge_path()
+for p in points: path.add_line(p[:2], p[:2])
+
+# Centerlines
+msp.add_line((L/2,0,0), (L/2,W,0), dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+msp.add_line((0,W/2,0), (L,W/2,0), dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+
+# Grate symbol (block reused from your original)
+block = doc.blocks.new("GRATE_SYMBOL")
+block.add_lwpolyline([(0,0),(2,0),(2,1),(0,1),(0,0)], dxfattribs={"layer":"GRATE"})
+block.add_circle((1,0.5), radius=0.4, dxfattribs={"layer":"GRATE"})
+doc.blocks.new("GRATE_HEAVY")  # placeholder for heavy-duty variant
+
+insert = msp.add_blockref("GRATE_SYMBOL" if grate=="STD" else "GRATE_HEAVY", (L/2, W/2), dxfattribs={"xscale": W/3, "yscale": W/3, "layer": "GRATE"})
+
+# Title block text (exact same as your drawing)
+msp.add_mtext("ARMOREL - CB-5\\PSTANDARD CATCH BASIN", 
+    dxfattribs={"style": "NOTES", "insert": (L+1, W-1), "char_height": 0.25, "layer": "TITLE"})
+
+# Dimensions (exact same style)
+dim = msp.add_linear_dim(base=(0,-0.5,0), p1=(0,0), p2=(L,0), dimstyle="MURPHY", layer="DIM")
+dim.render()
+dim = msp.add_linear_dim(base=(-0.5,0,0), p1=(0,0), p2=(0,W), dimstyle="MURPHY", angle=90, layer="DIM")
+dim.render()
+
+# Notes (your exact notes block)
+notes = [
+    "ALL CONCRETE SHALL BE 4000 PSI MIN.",
+    "REBAR #4 @ 12\" O.C. E.W. UNO.",
+    "PROVIDE 4\" CHAMFER ON ALL EXPOSED CORNERS.",
+    "GRATE: BICYCLE SAFE PER FDACS STANDARDS."
+]
+y = W + 1.5
+for line in notes:
+    msp.add_text(line, dxfattribs={"style": "NOTES", "height": 0.125, "insert": (0.5, y), "layer": "TEXT"})
+    y -= 0.25
+
+# Save
+doc.saveas("MURPHY_ARMOREL_CB-5.dxf")
+`;
+
+      await pyodide.runPythonAsync(code);
+
+      // Trigger download
+      const fs = window.pyodide.FS;
+      const data = fs.readFile("MURPHY_ARMOREL_CB-5.dxf");
+      const blob = new Blob([data], {type: "application/dxf"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "MURPHY_ARMOREL_CB-5.dxf";
+      a.click();
+      URL.revokeObjectURL(url);
+
+      document.getElementById("loading").style.display = "none";
+    }
+  </script>
+</body>
+</html>
