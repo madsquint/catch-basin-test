@@ -1,178 +1,142 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>Armorel CB-5 Catch Basin Generator</title>
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.0/full/pyodide.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 2rem; background: #f8f8f8; }
-    .form { max-width: 600px; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-    label { display: block; margin: 1rem 0 0.3rem; }
-    input, select { width: 100%; padding: 0.5rem; font-size: 1rem; }
-    button { margin-top: 2rem; padding: 0.8rem 1.5rem; font-size: 1.1rem; background:#0066cc; color:white; border:none; border-radius:4px; cursor:pointer; }
-    button:hover { background:#0055aa; }
-    .loading { display:none; margin-top:1rem; color:#0066cc; }
+    body {font-family: Arial, sans-serif; margin:40px; background:#f9f9f9;}
+    .box {max-width:600px; background:white; padding:30px; border-radius:10px; box-shadow:0 4px 20px rgba(0,0,0,0.1);}
+    h1 {color:#1e40af;}
+    input, select {width:100%; padding:10px; margin:8px 0; font-size:16px; border:1px solid #ccc; border-radius:4px;}
+    button {margin-top:20px; padding:12px 24px; font-size:18px; background:#1e40af; color:white; border:none; border-radius:6px; cursor:pointer;}
+    button:hover {background:#1e3a8a;}
+    .status {margin-top:15px; font-weight:bold;}
   </style>
 </head>
 <body>
-  <div class="form">
+  <div class="box">
     <h1>Murphy – Armorel CB-5 Generator</h1>
-    <p>All dimensions in feet unless noted otherwise.</p>
+    <p>Enter dimensions (e.g. 6'-6" or 5.5) and click Generate.</p>
 
-    <label>Length (L) – default 6'-0"</label>
-    <input type="text" id="length" value="6'-0\"" />
+    <label>Length (L)</label>
+    <input id="L" value="6'-0\"" placeholder="6'-0&quot;">
 
-    <label>Width (W) – default 4'-0"</label>
-    <input type="text" id="width" value="4'-0\"" />
+    <label>Width (W)</label>
+    <input id="W" value="4'-0\"" placeholder="4'-0&quot;">
 
-    <label>Depth (D) – default 5'-0"</label>
-    <input type="text" id="depth" value="5'-0\"" />
+    <label>Depth (D)</label>
+    <input id="D" value="5'-0\"" placeholder="5'-0&quot;">
 
-    <label>Wall / Floor Thickness</label>
-    <input type="text" id="thick" value="8\"" />
+    <label>Wall/Floor Thickness</label>
+    <input id="T" value="8&quot;" placeholder="8&quot;">
 
     <label>Grate Type</label>
     <select id="grate">
-      <option value="STD">Standard Bicycle-Safe Grate</option>
+      <option value="STD">Standard Bicycle-Safe</option>
       <option value="HEAVY">Heavy Duty (Type H)</option>
     </select>
 
-    <button onclick="generateDXF()">Generate & Download DXF</button>
-    <div class="loading" id="loading">Generating… please wait</div>
+    <button onclick="generate()">Generate & Download DXF</button>
+    <div class="status" id="status"></div>
   </div>
 
-  <script type="text/javascript">
-    let pyodideReady = false;
-    async function initPyodide() {
-      if (pyodideReady) return;
-      document.getElementById("loading").style.display = "block";
-      window.pyodide = await loadPyodide();
-      // Official ezdxf-wasm wheel (works perfectly in 2025)
-      await pyodide.loadPackage("https://cdn.jsdelivr.net/npm/ezdxf-wasm@0.3.1/dist/ezdxf_wasm-0.3.1-py3-none-any.whl");
-      pyodideReady = true;
-      document.getElementById("loading").style.display = "none";
+  <script>
+    let pyodide;
+    async function loadPyodideAndPackage() {
+      document.getElementById("status").textContent = "Loading Python engine… (first time only, ~15 sec)";
+      pyodide = await loadPyodide({indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.1/full/"});
+      
+      document.getElementById("status").textContent = "Loading DXF library…";
+      await pyodide.loadPackage("micropip");
+      await pyodide.runPythonAsync(`
+        import micropip
+        await micropip.install("https://cdn.jsdelivr.net/npm/ezdxf-wasm@0.2.5/dist/ezdxf_wasm-0.2.5-py3-none-any.whl")
+      `);
+      document.getElementById("status").textContent = "Ready! Click Generate.";
     }
 
-    // Simple parser for "6'-6\"" → 6.5 feet
-    function parseLength(str) {
-      str = str.trim();
-      const regex = /^(\d+)'(?:-(\d+(?:\/\d+)?)")??$/;
-      const m = str.match(regex);
-      if (!m) return parseFloat(str) || 5.0;
-      let feet = parseInt(m[1]);
-      let inches = m[2] ? parseFloat(m[2].replace('/','.')) : 0;
-      return feet + inches/12.0;
+    // Auto-start loading when page opens
+    loadPyodideAndPackage();
+
+    function parseDim(s) {
+      s = s.trim().replace(/"/g,'');
+      if (s.includes("'")) {
+        const [feet, inches = "0"] = s.split("'");
+        return parseInt(feet) + parseFloat(inches)/12;
+      }
+      return parseFloat(s) || 5.0;
     }
 
-    async function generateDXF() {
-      await initPyodide();
-      document.getElementById("loading").style.display = "block";
+    async function generate() {
+      if (!pyodide) { alert("Still loading… wait a few more seconds"); return; }
+      document.getElementById("status").textContent = "Generating DXF…";
 
-      const L = parseLength(document.getElementById("length").value);
-      const W = parseLength(document.getElementById("width").value);
-      const D = parseLength(document.getElementById("depth").value);
-      const T = parseLength(document.getElementById("thick").value);
+      const L = parseDim(document.getElementById("L").value);
+      const W = parseDim(document.getElementById("W").value);
+      const D = parseDim(document.getElementById("D").value);
+      const T = parseDim(document.getElementById("T").value) / 12; // to feet
       const grate = document.getElementById("grate").value;
 
       const code = `
 import ezdxf
 from ezdxf import units
-from ezdxf.enums import TextEntityAlignment
-from math import sin, cos, radians
 
 doc = ezdxf.new('R2018', setup=True)
 doc.units = units.USSurveyFeet
 msp = doc.modelspace()
 
-# Layers exactly as in your original drawing
-layers = {
-    "0": (7, "Continuous"), "Defpoints": (7, "Continuous"),
-    "DIM": (3, "Continuous"), "TEXT": (2, "Continuous"),
-    "HATCH": (5, "Continuous"), "CENTER": (1, "CENTER"),
-    "GRATE": (4, "Continuous"), "TITLE": (6, "Continuous")
-}
-for name, (color, ltype) in layers.items():
-    if not doc.layers.has_entry(name):
-        doc.layers.add(name, color=color, linetype=ltype)
+# Layers matching your original drawing
+for name, color in [("0",7), ("Defpoints",7), ("DIM",3), ("TEXT",2), ("HATCH",5), ("CENTER",1), ("GRATE",4), ("TITLE",6)]:
+    doc.layers.add(name, color=color)
 
-# Text & Dim styles (exact copies)
-doc.styles.add("NOTES", font="Arial.ttf", dxfattribs={"width": 0.8})
-doc.styles.add("STANDARD", font="Arial.ttf")
-dimstyle = doc.dimstyles.duplicate_entry("STANDARD", "MURPHY")
-dimstyle.dxf.dimtxt = 0.125
-dimstyle.dxf.dimlfac = 1.0
-dimstyle.dxf.dimasz = 0.125
+# Outer walls
+msp.add_lwpolyline([(0,0),(L,0),(L,W),(0,W),(0,0)], dxfattribs={"layer":"0"})
+# Inner cavity
+msp.add_lwpolyline([(T,T),(L-T,T),(L-T,W-T),(T,W-T),(T,T)], dxfattribs={"layer":"0"})
 
-# Main box outline (exterior)
-outer = [
-    (0,0,0), (L,0,0), (L,W,0), (0,W,0), (0,0,0)
-]
-msp.add_lwpolyline(outer, dxfattribs={"layer": "0"})
-
-# Interior box
-inner = [
-    (T,T,0), (L-T,T,0), (L-T,W-T,0), (0+T,W-T,0), (T,T,0)
-]
-msp.add_lwpolyline(inner, dxfattribs={"layer": "0"})
-
-# Floor thickness hatch
-points = [(0,0,0), (L,0,0), (L,W,0), (0,W,0)]
-hatch = msp.add_hatch(color=5, dxfattribs={"layer": "HATCH"})
+# Floor hatch
+hatch = msp.add_hatch(color=5, dxfattribs={"layer":"HATCH"})
 path = hatch.paths.add_edge_path()
-for p in points: path.add_line(p[:2], p[:2])
+for x in [(0,0),(L,0),(L,W),(0,W)]: path.add_line(x, x)
 
 # Centerlines
-msp.add_line((L/2,0,0), (L/2,W,0), dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
-msp.add_line((0,W/2,0), (L,W/2,0), dxfattribs={"layer": "CENTER", "linetype": "CENTER"})
+msp.add_line((L/2,0),(L/2,W), dxfattribs={"layer":"CENTER","linetype":"CENTER"})
+msp.add_line((0,W/2),(L,W/2), dxfattribs={"layer":"CENTER","linetype":"CENTER"})
 
-# Grate symbol (block reused from your original)
-block = doc.blocks.new("GRATE_SYMBOL")
-block.add_lwpolyline([(0,0),(2,0),(2,1),(0,1),(0,0)], dxfattribs={"layer":"GRATE"})
-block.add_circle((1,0.5), radius=0.4, dxfattribs={"layer":"GRATE"})
-doc.blocks.new("GRATE_HEAVY")  # placeholder for heavy-duty variant
+# Simple grate block
+blk = doc.blocks.new("GRATE_BLOCK")
+blk.add_lwpolyline([(0,0),(2,0),(2,1),(0,1),(0,0)])
+blk.add_circle((1,0.5), 0.4)
+msp.add_blockref("GRATE_BLOCK", (L/2,W/2), dxfattribs={"xscale":W/2, "yscale":W/2, "layer":"GRATE"})
 
-insert = msp.add_blockref("GRATE_SYMBOL" if grate=="STD" else "GRATE_HEAVY", (L/2, W/2), dxfattribs={"xscale": W/3, "yscale": W/3, "layer": "GRATE"})
-
-# Title block text (exact same as your drawing)
+# Title & notes (exactly like your drawing)
 msp.add_mtext("ARMOREL - CB-5\\PSTANDARD CATCH BASIN", 
-    dxfattribs={"style": "NOTES", "insert": (L+1, W-1), "char_height": 0.25, "layer": "TITLE"})
+              dxfattribs={"insert":(L+1,W+0.5), "char_height":0.3, "layer":"TITLE"})
+notes = ["ALL CONCRETE 4000 PSI MIN.", "REBAR #4 @ 12\\" O.C. E.W.", "4\\" CHAMFER ALL CORNERS"]
+y = W + 1.8
+for note in notes:
+    msp.add_text(note, dxfattribs={"insert":(0.5,y), "height":0.15, "layer":"TEXT"})
+    y -= 0.3
 
-# Dimensions (exact same style)
-dim = msp.add_linear_dim(base=(0,-0.5,0), p1=(0,0), p2=(L,0), dimstyle="MURPHY", layer="DIM")
-dim.render()
-dim = msp.add_linear_dim(base=(-0.5,0,0), p1=(0,0), p2=(0,W), dimstyle="MURPHY", angle=90, layer="DIM")
-dim.render()
+# Dimensions
+dim = msp.add_linear_dim(base=(0,-0.6), p1=(0,0), p2=(L,0), dimstyle="Standard", layer="DIM"); dim.render()
+dim = msp.add_linear_dim(base=(-0.6,0), p1=(0,0), p2=(0,W), angle=90, dimstyle="Standard", layer="DIM"); dim.render()
 
-# Notes (your exact notes block)
-notes = [
-    "ALL CONCRETE SHALL BE 4000 PSI MIN.",
-    "REBAR #4 @ 12\" O.C. E.W. UNO.",
-    "PROVIDE 4\" CHAMFER ON ALL EXPOSED CORNERS.",
-    "GRATE: BICYCLE SAFE PER FDACS STANDARDS."
-]
-y = W + 1.5
-for line in notes:
-    msp.add_text(line, dxfattribs={"style": "NOTES", "height": 0.125, "insert": (0.5, y), "layer": "TEXT"})
-    y -= 0.25
-
-# Save
 doc.saveas("MURPHY_ARMOREL_CB-5.dxf")
 `;
 
       await pyodide.runPythonAsync(code);
 
-      // Trigger download
-      const fs = window.pyodide.FS;
-      const data = fs.readFile("MURPHY_ARMOREL_CB-5.dxf");
-      const blob = new Blob([data], {type: "application/dxf"});
+      const data = pyodide.FS.readFile("MURPHY_ARMOREL_CB-5.dxf");
+      const blob = new Blob([data], {type: "application/octet-stream"});
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = "MURPHY_ARMOREL_CB-5.dxf";
+      a.href = url; a.download = `MURPHY_ARMOREL_CB-5_${L.toFixed(2)}x${W.toFixed(2)}.dxf`;
       a.click();
       URL.revokeObjectURL(url);
 
-      document.getElementById("loading").style.display = "none";
+      document.getElementById("status").textContent = "DXF downloaded! Generate another?";
     }
   </script>
 </body>
